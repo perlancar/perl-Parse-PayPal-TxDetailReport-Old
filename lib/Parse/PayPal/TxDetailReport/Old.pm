@@ -10,12 +10,23 @@ use warnings;
 use Exporter qw(import);
 our @EXPORT_OK = qw(parse_paypal_old_txdetail_report);
 
-use DateTime::Format::Flexible; # XXX find a more lightweight alternative
+use DateTime; # XXX find a more lightweight alternative
 
 our %SPEC;
 
 sub _parse_date {
-    DateTime::Format::Flexible->parse_datetime(shift)->epoch;
+    my ($fmt, $date) = @_;
+    if ($fmt eq 'MM/DD/YYYY') {
+        $date =~ m!^(\d\d?)/(\d\d?)/(\d\d\d\d)$!
+            or die "Invalid date format in '$date', must be MM/DD/YYYY";
+        return DateTime->new(year => $3, month => $1, day => $2)->epoch;
+    } elsif ($fmt eq 'DD/MM/YYYY') {
+        $date =~ m!^(\d\d?)/(\d\d?)/(\d\d\d\d)$!
+            or die "Invalid date format in '$date', must be DD/MM/YYYY";
+        return DateTime->new(year => $3, month => $2, day => $1)->epoch;
+    } else {
+        die "Unknown date format, please use MM/DD/YYYY or DD/MM/YYYY";
+    }
 }
 
 $SPEC{parse_paypal_old_txdetail_report} = {
@@ -69,24 +80,25 @@ sub parse_paypal_old_txdetail_report {
     my %args = @_;
 
     my $format = $args{format};
+    my $date_format = $args{date_format} // 'MM/DD/YYYY';
 
     my $fh;
     my $file;
-    if (defined(my $str0 = $args{string})) {
+    if (defined(my $str = $args{string})) {
         require IO::Scalar;
         require String::BOM;
 
         if (!$format) {
-            $format = $strings->[0] =~ /\t/ ? 'tsv' : 'csv';
+            $format = $str =~ /\t/ ? 'tsv' : 'csv';
         }
-        my $str = String::BOM::strip_bom_from_string($str0);
+        $str = String::BOM::strip_bom_from_string($str);
         $fh = IO::Scalar->new(\$str);
         $file = "string";
     } elsif (defined(my $file0 = $args{file})) {
         require File::BOM;
 
         if (!$format) {
-            $format = $files->[0] =~ /\.(csv)\z/i ? 'csv' : 'tsv';
+            $format = $file0 =~ /\.(csv)\z/i ? 'csv' : 'tsv';
         }
         open $fh, "<:encoding(utf8):via(File::BOM)", $file0
             or return [500, "Can't open file '$file': $!"];
@@ -101,26 +113,26 @@ sub parse_paypal_old_txdetail_report {
     }];
 
     my $code_parse_row = sub {
-        my ($row, $rownum) = @_;
+        my ($rownum, $row) = @_;
 
         if ($rownum == 1) {
             unless (@$row > 10 && $row->[0] eq 'Date') {
                 $res = [400, "Doesn't look like old transaction detail ".
                             "format, I expect first row to be column names ".
                             "and first column header to be Date"];
-                goto RETURN RES;
+                goto RETURN_RES;
             }
             $res->[2]{_transaction_columns} = $row;
             return;
         }
         my $tx = {};
         my $txcols = $res->[2]{_transaction_columns};
-        for (1..$#{$row}) {
-            my $field = $txcols->[$_-1];
+        for (0..$#{$row}) {
+            my $field = $txcols->[$_];
             if ($field =~ /Date$/ && $row->[$_]) {
                 $tx->{$field} = _parse_date($date_format, $row->[$_]);
             } else {
-                $tx->{$header} = $row->[$_];
+                $tx->{$field} = $row->[$_];
             }
         }
         push @{ $res->[2]{transactions} }, $tx;
@@ -129,19 +141,23 @@ sub parse_paypal_old_txdetail_report {
     my $csv;
     if ($format eq 'csv') {
         require Text::CSV;
-        $csv = Text::CSV->new
+        $csv = Text::CSV->new({binary=>1})
             or return [500, "Cannot use CSV: ".Text::CSV->error_diag];
     }
 
     if ($format eq 'csv') {
-        while (my $row = $csv->getline($handles[$i])) {
-            $code_parse_row->($row);
+        my $rownum = 0;
+        while (my $row = $csv->getline($fh)) {
+            $rownum++;
+            $code_parse_row->($rownum, $row);
         }
+        say $csv->error_diag;
     } else {
-        my $fh = $handles[$i];
+        my $rownum = 0;
         while (my $line = <$fh>) {
+            $rownum++;
             chomp($line);
-            $code_parse_row->([split /\t/, $line]);
+            $code_parse_row->($rownum, [split /\t/, $line]);
         }
     }
     delete $res->[2]{_transaction_columns};
@@ -190,8 +206,8 @@ Sample result when parse is successful:
 
 PayPal provides various kinds of reports which you can retrieve from their
 website under Reports menu. This module provides routine to parse PayPal old
-transaction detail report (2015 and earlier). Multiple files are supported. Both
-the tab-separated format and comma-separated (CSV) format are supported.
+transaction detail report (2015 and earlier). Both the tab-separated format and
+comma-separated (CSV) format are supported.
 
 
 =head1 SEE ALSO
