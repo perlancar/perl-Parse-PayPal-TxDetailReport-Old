@@ -151,7 +151,6 @@ sub parse_paypal_old_txdetail_report {
             $rownum++;
             $code_parse_row->($rownum, $row);
         }
-        say $csv->error_diag;
     } else {
         my $rownum = 0;
         while (my $line = <$fh>) {
